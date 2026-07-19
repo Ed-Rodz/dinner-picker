@@ -3,6 +3,29 @@ const HISTORY_KEY = "dinnerPickerHistory";
 const HISTORY_LIMIT = 10;
 const AVOID_LAST = 6; // how many recent picks to try to avoid repeating
 
+// Curated cuisine groups. TheMealDB's free API only has recipes tagged
+// against ~28 of its ~190 "area" values (checked directly against the API —
+// e.g. American, French, Indian, and Korean currently return zero recipes),
+// so each group below only combines areas that actually have data.
+const CUISINE_GROUPS = {
+  "Mexican": ["Mexican"],
+  "Latin American": ["Jamaican", "Uruguayan"],
+  "Mediterranean": [
+    "Spanish", "Italian", "Greek", "Turkish", "Tunisian", "Egyptian",
+    "Moroccan", "Croatian", "Portuguese",
+  ],
+  "Italian": ["Italian"],
+  "Chinese": ["Chinese"],
+  "Japanese": ["Japanese"],
+  "Thai": ["Thai"],
+  "Southeast Asian": ["Vietnamese", "Malaysian", "Filipino"],
+  "British & Irish": ["British", "Irish"],
+  "Eastern European": ["Polish", "Russian", "Ukrainian"],
+  "Middle Eastern & North African": [
+    "Saudi Arabian", "Syrian", "Algerian", "Egyptian", "Tunisian", "Moroccan",
+  ],
+};
+
 const cuisineSelect = document.getElementById("cuisine");
 const categorySelect = document.getElementById("category");
 const findBtn = document.getElementById("findBtn");
@@ -20,20 +43,17 @@ init();
 
 async function init() {
   renderHistory();
+  fillSelect(cuisineSelect, Object.keys(CUISINE_GROUPS), false);
   try {
-    const [areas, categories] = await Promise.all([
-      fetchJson(`${API}/list.php?a=list`),
-      fetchJson(`${API}/list.php?c=list`),
-    ]);
-    fillSelect(cuisineSelect, areas.meals.map(m => m.strArea));
+    const categories = await fetchJson(`${API}/list.php?c=list`);
     fillSelect(categorySelect, categories.meals.map(m => m.strCategory));
   } catch (err) {
     setStatus("Couldn't load filter options — check your internet connection.", true);
   }
 }
 
-function fillSelect(select, values) {
-  values.sort().forEach(v => {
+function fillSelect(select, values, sort = true) {
+  (sort ? [...values].sort() : values).forEach(v => {
     const opt = document.createElement("option");
     opt.value = v;
     opt.textContent = v;
@@ -84,26 +104,44 @@ async function findMeal({ freshSearch }) {
 }
 
 async function getCandidates() {
-  const area = cuisineSelect.value;
+  const cuisine = cuisineSelect.value;
   const category = categorySelect.value;
 
-  if (!area && !category) {
+  if (!cuisine && !category) {
     const random = await fetchJson(`${API}/random.php`);
     return random.meals;
   }
 
-  if (area && category) {
-    const [byArea, byCategory] = await Promise.all([
-      fetchJson(`${API}/filter.php?a=${encodeURIComponent(area)}`),
-      fetchJson(`${API}/filter.php?c=${encodeURIComponent(category)}`),
-    ]);
+  const byArea = cuisine ? await fetchMealsForCuisine(cuisine) : null;
+
+  if (cuisine && category) {
+    const byCategory = await fetchJson(`${API}/filter.php?c=${encodeURIComponent(category)}`);
     const categoryIds = new Set((byCategory.meals || []).map(m => m.idMeal));
-    return (byArea.meals || []).filter(m => categoryIds.has(m.idMeal));
+    return byArea.filter(m => categoryIds.has(m.idMeal));
   }
 
-  const param = area ? `a=${encodeURIComponent(area)}` : `c=${encodeURIComponent(category)}`;
-  const result = await fetchJson(`${API}/filter.php?${param}`);
+  if (cuisine) return byArea;
+
+  const result = await fetchJson(`${API}/filter.php?c=${encodeURIComponent(category)}`);
   return result.meals || [];
+}
+
+async function fetchMealsForCuisine(cuisine) {
+  const areas = CUISINE_GROUPS[cuisine] || [cuisine];
+  const results = await Promise.all(
+    areas.map(a => fetchJson(`${API}/filter.php?a=${encodeURIComponent(a)}`))
+  );
+  const seen = new Set();
+  const meals = [];
+  for (const result of results) {
+    for (const meal of result.meals || []) {
+      if (!seen.has(meal.idMeal)) {
+        seen.add(meal.idMeal);
+        meals.push(meal);
+      }
+    }
+  }
+  return meals;
 }
 
 function pickMeal(candidates, historyIds) {
