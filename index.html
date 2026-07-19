@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>What's for Dinner?</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>What's for Dinner?</h1>
+      <p class="subtitle">Live recipe ideas, pulled fresh from the web.</p>
+    </header>
+
+    <section class="filters">
+      <div class="field">
+        <label for="cuisine">Cuisine</label>
+        <select id="cuisine"><option value="">Any</option></select>
+      </div>
+      <div class="field">
+        <label for="category">Type</label>
+        <select id="category"><option value="">Any</option></select>
+      </div>
+      <button id="findBtn" class="primary">What should we eat?</button>
+    </section>
+
+    <section id="status" class="status"></section>
+
+    <section id="result" class="result hidden">
+      <div class="card">
+        <img id="mealImg" src="" alt="">
+        <div class="card-body">
+          <h2 id="mealName"></h2>
+          <div class="tags">
+            <span id="mealArea" class="tag"></span>
+            <span id="mealCategory" class="tag"></span>
+          </div>
+          <div class="actions">
+            <button id="rerollBtn">Try another</button>
+            <button id="cookedBtn" class="primary">We're cooking this</button>
+            <a id="youtubeLink" href="#" target="_blank" rel="noopener" class="hidden">Watch video</a>
+          </div>
+          <h3>Ingredients</h3>
+          <ul id="ingredients"></ul>
+          <h3>Instructions</h3>
+          <p id="instructions"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="history">
+      <h3>Recently suggested</h3>
+      <ul id="historyList"></ul>
+      <button id="clearHistory" class="link">Clear history</button>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
