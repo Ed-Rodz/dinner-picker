@@ -9,7 +9,8 @@ const AVOID_LAST = 6; // how many recent picks to try to avoid repeating
 // so each group below only combines areas that actually have data.
 const CUISINE_GROUPS = {
   "Mexican": ["Mexican"],
-  "Latin American": ["Jamaican", "Uruguayan"],
+  "Latin American": ["Uruguayan"],
+  "Caribbean": ["Jamaican"],
   "Mediterranean": [
     "Spanish", "Italian", "Greek", "Turkish", "Tunisian", "Egyptian",
     "Moroccan", "Croatian", "Portuguese",
