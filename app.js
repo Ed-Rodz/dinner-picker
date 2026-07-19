@@ -1,30 +1,42 @@
-const API = "https://www.themealdb.com/api/json/v1/1";
+const MEALDB_API = "https://www.themealdb.com/api/json/v1/1";
+const SPOONACULAR_API = "https://api.spoonacular.com/recipes";
+// Public by necessity: this is a static site with no backend, so any key here
+// is visible to anyone who views source. Free-tier quota abuse is the worst
+// case; regenerate from the Spoonacular dashboard if that ever happens.
+const SPOONACULAR_KEY = "76698fe3c3164dea88854c372897cba7";
+
 const HISTORY_KEY = "dinnerPickerHistory";
 const HISTORY_LIMIT = 10;
 const AVOID_LAST = 6; // how many recent picks to try to avoid repeating
 
-// Curated cuisine groups. TheMealDB's free API only has recipes tagged
-// against ~28 of its ~190 "area" values (checked directly against the API —
-// e.g. American, French, Indian, and Korean currently return zero recipes),
-// so each group below only combines areas that actually have data.
+// Curated cuisine groups, each backed by whichever underlying values actually
+// have recipes in each API. TheMealDB only tags ~28 of its ~190 "area" values
+// with any recipes (verified directly against the API); Spoonacular has much
+// broader real coverage (including American, French, Indian, Korean), so it's
+// used to fill in the cuisines TheMealDB can't cover well on its own.
 const CUISINE_GROUPS = {
-  "Mexican": ["Mexican"],
-  "Latin American": ["Uruguayan"],
-  "Caribbean": ["Jamaican"],
-  "Mediterranean": [
-    "Spanish", "Italian", "Greek", "Turkish", "Tunisian", "Egyptian",
-    "Moroccan", "Croatian", "Portuguese",
-  ],
-  "Italian": ["Italian"],
-  "Chinese": ["Chinese"],
-  "Japanese": ["Japanese"],
-  "Thai": ["Thai"],
-  "Southeast Asian": ["Vietnamese", "Malaysian", "Filipino"],
-  "British & Irish": ["British", "Irish"],
-  "Eastern European": ["Polish", "Russian", "Ukrainian"],
-  "Middle Eastern & North African": [
-    "Saudi Arabian", "Syrian", "Algerian", "Egyptian", "Tunisian", "Moroccan",
-  ],
+  "Mexican": { mealdb: ["Mexican"], spoonacular: ["Mexican"] },
+  "Latin American": { mealdb: ["Uruguayan"], spoonacular: ["Latin American"] },
+  "Caribbean": { mealdb: ["Jamaican"], spoonacular: ["Caribbean"] },
+  "Mediterranean": {
+    mealdb: ["Spanish", "Italian", "Greek", "Turkish", "Tunisian", "Egyptian", "Moroccan", "Croatian", "Portuguese"],
+    spoonacular: ["Mediterranean"],
+  },
+  "Italian": { mealdb: ["Italian"], spoonacular: ["Italian"] },
+  "Chinese": { mealdb: ["Chinese"], spoonacular: ["Chinese"] },
+  "Japanese": { mealdb: ["Japanese"], spoonacular: ["Japanese"] },
+  "Thai": { mealdb: ["Thai"], spoonacular: ["Thai"] },
+  "Southeast Asian": { mealdb: ["Vietnamese", "Malaysian", "Filipino"], spoonacular: ["Vietnamese"] },
+  "British & Irish": { mealdb: ["British", "Irish"], spoonacular: ["British", "Irish"] },
+  "Eastern European": { mealdb: ["Polish", "Russian", "Ukrainian"], spoonacular: ["Eastern European"] },
+  "Middle Eastern & North African": {
+    mealdb: ["Saudi Arabian", "Syrian", "Algerian", "Egyptian", "Tunisian", "Moroccan"],
+    spoonacular: ["Middle Eastern", "African"],
+  },
+  "American": { mealdb: ["American"], spoonacular: ["American", "Southern"] },
+  "French": { mealdb: ["French"], spoonacular: ["French"] },
+  "Indian": { mealdb: ["Indian"], spoonacular: ["Indian"] },
+  "Korean": { mealdb: ["South Korean"], spoonacular: ["Korean"] },
 };
 
 const cuisineSelect = document.getElementById("cuisine");
@@ -46,7 +58,7 @@ async function init() {
   renderHistory();
   fillSelect(cuisineSelect, Object.keys(CUISINE_GROUPS), false);
   try {
-    const categories = await fetchJson(`${API}/list.php?c=list`);
+    const categories = await fetchJson(`${MEALDB_API}/list.php?c=list`);
     fillSelect(categorySelect, categories.meals.map(m => m.strCategory));
   } catch (err) {
     setStatus("Couldn't load filter options — check your internet connection.", true);
@@ -88,12 +100,11 @@ async function findMeal({ freshSearch }) {
       return;
     }
 
-    const history = getHistory().map(h => h.id);
+    const history = getHistory().map(h => h.key);
     const pick = pickMeal(currentCandidates, history);
-    currentCandidates = currentCandidates.filter(c => c.idMeal !== pick.idMeal);
+    currentCandidates = currentCandidates.filter(c => c.key !== pick.key);
 
-    const detail = await fetchJson(`${API}/lookup.php?i=${pick.idMeal}`);
-    currentMeal = detail.meals[0];
+    currentMeal = await fetchMealDetail(pick);
     renderMeal(currentMeal);
     setStatus("");
   } catch (err) {
@@ -109,74 +120,169 @@ async function getCandidates() {
   const category = categorySelect.value;
 
   if (!cuisine && !category) {
-    const random = await fetchJson(`${API}/random.php`);
-    return random.meals;
+    const random = await fetchJson(`${MEALDB_API}/random.php`);
+    return random.meals.map(normalizeMealDbSummary);
   }
-
-  const byArea = cuisine ? await fetchMealsForCuisine(cuisine) : null;
 
   if (cuisine && category) {
-    const byCategory = await fetchJson(`${API}/filter.php?c=${encodeURIComponent(category)}`);
-    const categoryIds = new Set((byCategory.meals || []).map(m => m.idMeal));
-    return byArea.filter(m => categoryIds.has(m.idMeal));
+    const [mealdbByArea, mealdbByCategory] = await Promise.all([
+      fetchMealDbForCuisine(cuisine),
+      fetchJson(`${MEALDB_API}/filter.php?c=${encodeURIComponent(category)}`),
+    ]);
+    const categoryIds = new Set((mealdbByCategory.meals || []).map(m => m.idMeal));
+    return mealdbByArea.filter(m => categoryIds.has(m.id));
   }
 
-  if (cuisine) return byArea;
+  if (cuisine) {
+    const [mealdbResults, spoonacularResults] = await Promise.all([
+      fetchMealDbForCuisine(cuisine),
+      fetchSpoonacularForCuisine(cuisine),
+    ]);
+    return [...mealdbResults, ...spoonacularResults];
+  }
 
-  const result = await fetchJson(`${API}/filter.php?c=${encodeURIComponent(category)}`);
-  return result.meals || [];
+  const result = await fetchJson(`${MEALDB_API}/filter.php?c=${encodeURIComponent(category)}`);
+  return (result.meals || []).map(normalizeMealDbSummary);
 }
 
-async function fetchMealsForCuisine(cuisine) {
-  const areas = CUISINE_GROUPS[cuisine] || [cuisine];
+async function fetchMealDbForCuisine(cuisine) {
+  const areas = CUISINE_GROUPS[cuisine]?.mealdb || [];
+  if (areas.length === 0) return [];
   const results = await Promise.all(
-    areas.map(a => fetchJson(`${API}/filter.php?a=${encodeURIComponent(a)}`))
+    areas.map(a => fetchJson(`${MEALDB_API}/filter.php?a=${encodeURIComponent(a)}`))
   );
   const seen = new Set();
   const meals = [];
   for (const result of results) {
     for (const meal of result.meals || []) {
-      if (!seen.has(meal.idMeal)) {
-        seen.add(meal.idMeal);
-        meals.push(meal);
+      const normalized = normalizeMealDbSummary(meal);
+      if (!seen.has(normalized.key)) {
+        seen.add(normalized.key);
+        meals.push(normalized);
       }
     }
   }
   return meals;
 }
 
-function pickMeal(candidates, historyIds) {
-  const fresh = candidates.filter(c => !historyIds.slice(0, AVOID_LAST).includes(c.idMeal));
+async function fetchSpoonacularForCuisine(cuisine) {
+  const cuisines = CUISINE_GROUPS[cuisine]?.spoonacular || [];
+  if (cuisines.length === 0) return [];
+  const results = await Promise.all(
+    cuisines.map(c =>
+      fetchJson(`${SPOONACULAR_API}/complexSearch?apiKey=${SPOONACULAR_KEY}&cuisine=${encodeURIComponent(c)}&number=20`)
+    )
+  );
+  const seen = new Set();
+  const meals = [];
+  for (const result of results) {
+    for (const item of result.results || []) {
+      const normalized = normalizeSpoonacularSummary(item);
+      if (!seen.has(normalized.key)) {
+        seen.add(normalized.key);
+        meals.push(normalized);
+      }
+    }
+  }
+  return meals;
+}
+
+function normalizeMealDbSummary(meal) {
+  return { source: "mealdb", id: meal.idMeal, key: `mealdb:${meal.idMeal}`, title: meal.strMeal, image: meal.strMealThumb };
+}
+
+function normalizeSpoonacularSummary(recipe) {
+  return { source: "spoonacular", id: String(recipe.id), key: `spoonacular:${recipe.id}`, title: recipe.title, image: recipe.image };
+}
+
+function pickMeal(candidates, historyKeys) {
+  const fresh = candidates.filter(c => !historyKeys.slice(0, AVOID_LAST).includes(c.key));
   const pool = fresh.length > 0 ? fresh : candidates;
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-function renderMeal(meal) {
-  document.getElementById("mealImg").src = meal.strMealThumb;
-  document.getElementById("mealImg").alt = meal.strMeal;
-  document.getElementById("mealName").textContent = meal.strMeal;
-  document.getElementById("mealArea").textContent = meal.strArea;
-  document.getElementById("mealCategory").textContent = meal.strCategory;
-  document.getElementById("instructions").textContent = meal.strInstructions;
+async function fetchMealDetail(pick) {
+  if (pick.source === "mealdb") {
+    const detail = await fetchJson(`${MEALDB_API}/lookup.php?i=${pick.id}`);
+    return normalizeMealDbDetail(detail.meals[0]);
+  }
+  const detail = await fetchJson(`${SPOONACULAR_API}/${pick.id}/information?apiKey=${SPOONACULAR_KEY}&includeNutrition=false`);
+  return normalizeSpoonacularDetail(detail);
+}
 
-  const ingredientsEl = document.getElementById("ingredients");
-  ingredientsEl.innerHTML = "";
+function normalizeMealDbDetail(meal) {
+  const ingredients = [];
   for (let i = 1; i <= 20; i++) {
     const ing = meal[`strIngredient${i}`];
     const measure = meal[`strMeasure${i}`];
     if (ing && ing.trim()) {
-      const li = document.createElement("li");
-      li.textContent = `${measure ? measure.trim() + " " : ""}${ing.trim()}`;
-      ingredientsEl.appendChild(li);
+      ingredients.push(`${measure ? measure.trim() + " " : ""}${ing.trim()}`);
     }
   }
+  return {
+    key: `mealdb:${meal.idMeal}`,
+    title: meal.strMeal,
+    image: meal.strMealThumb,
+    area: meal.strArea,
+    category: meal.strCategory,
+    ingredients,
+    instructions: meal.strInstructions,
+    videoUrl: meal.strYoutube || null,
+    sourceUrl: null,
+  };
+}
 
-  const ytLink = document.getElementById("youtubeLink");
-  if (meal.strYoutube) {
-    ytLink.href = meal.strYoutube;
-    ytLink.classList.remove("hidden");
+function normalizeSpoonacularDetail(meal) {
+  const ingredients = (meal.extendedIngredients || []).map(i => i.original);
+  let instructions = meal.instructions ? stripHtml(meal.instructions) : "";
+  if (!instructions && meal.analyzedInstructions?.[0]?.steps) {
+    instructions = meal.analyzedInstructions[0].steps.map(s => s.step).join("\n");
+  }
+  if (!instructions) instructions = "No instructions provided — check the original recipe link below.";
+  return {
+    key: `spoonacular:${meal.id}`,
+    title: meal.title,
+    image: meal.image,
+    area: meal.cuisines?.[0] || "",
+    category: meal.dishTypes?.[0] || "",
+    ingredients,
+    instructions,
+    videoUrl: null,
+    sourceUrl: meal.sourceUrl || null,
+  };
+}
+
+function stripHtml(html) {
+  return new DOMParser().parseFromString(html, "text/html").body.textContent.trim();
+}
+
+function renderMeal(meal) {
+  document.getElementById("mealImg").src = meal.image;
+  document.getElementById("mealImg").alt = meal.title;
+  document.getElementById("mealName").textContent = meal.title;
+  document.getElementById("mealArea").textContent = meal.area;
+  document.getElementById("mealCategory").textContent = meal.category;
+  document.getElementById("instructions").textContent = meal.instructions;
+
+  const ingredientsEl = document.getElementById("ingredients");
+  ingredientsEl.innerHTML = "";
+  meal.ingredients.forEach(text => {
+    const li = document.createElement("li");
+    li.textContent = text;
+    ingredientsEl.appendChild(li);
+  });
+
+  const linkEl = document.getElementById("externalLink");
+  if (meal.videoUrl) {
+    linkEl.href = meal.videoUrl;
+    linkEl.textContent = "Watch video";
+    linkEl.classList.remove("hidden");
+  } else if (meal.sourceUrl) {
+    linkEl.href = meal.sourceUrl;
+    linkEl.textContent = "View original recipe";
+    linkEl.classList.remove("hidden");
   } else {
-    ytLink.classList.add("hidden");
+    linkEl.classList.add("hidden");
   }
 
   resultEl.classList.remove("hidden");
@@ -192,10 +298,10 @@ function getHistory() {
 
 function addToHistory(meal) {
   const history = getHistory();
-  history.unshift({ id: meal.idMeal, name: meal.strMeal, date: new Date().toISOString() });
+  history.unshift({ key: meal.key, name: meal.title, date: new Date().toISOString() });
   localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, HISTORY_LIMIT)));
   renderHistory();
-  setStatus(`Added "${meal.strMeal}" to history. Enjoy!`);
+  setStatus(`Added "${meal.title}" to history. Enjoy!`);
 }
 
 function renderHistory() {
